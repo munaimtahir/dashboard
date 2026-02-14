@@ -1,0 +1,31 @@
+apps:
+  - key: dashboard
+    name: Dashboard v1
+    domain: dashboard.alshifalab.pk
+    containers:
+      - dashboard_frontend
+      - dashboard_backend
+    backend_health_url: http://dashboard_backend:8000/health
+    frontend_url: https://dashboard.alshifalab.pk
+
+  - key: lims
+    name: LIMS
+    domain: lims.alshifalab.pk
+    containers:
+      - lims_backend
+      - lims_frontend
+      - lims_db
+      - lims_redis
+    backend_health_url: http://127.0.0.1:8012/api/health/
+    frontend_url: https://lims.alshifalab.pk
+
+  - key: ops
+    name: Ops Dashboard (Example)
+    domain: ops.alshifalab.pk
+    containers:
+      - ops_dashboard_frontend
+      - ops_dashboard_backend
+      - ops_dashboard_postgres
+      - ops_dashboard_redis
+    backend_health_url: http://127.0.0.1:18000/health
+    frontend_url: https://ops.alshifalab.pk

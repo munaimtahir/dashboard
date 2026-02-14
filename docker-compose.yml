@@ -1,0 +1,26 @@
+services:
+  dashboard_backend:
+    container_name: dashboard_backend
+    build: ./backend
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.env:/app/.env:ro
+      - ./manifest.yml:/app/manifest.yml:ro
+      - ./data:/data
+      # Read-only host mounts for host-level summary metrics.
+      - /:/host:ro
+    expose:
+      - "8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  dashboard_frontend:
+    container_name: dashboard_frontend
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8013:80"
+    depends_on:
+      - dashboard_backend
+    restart: unless-stopped

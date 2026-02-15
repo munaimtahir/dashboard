@@ -2,24 +2,34 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
+from urllib.parse import urlparse
 from typing import Dict, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
+from docker.errors import NotFound as DockerNotFound
 
 from . import audit
 from .auth import get_admin_password, make_token, require_auth
 from .docker_ops import (
     action_on_containers,
-    discover_containers,
+    discover_inventory,
     get_container_info,
+    list_container_names,
     tail_logs,
 )
-from .manifest import load_manifest
+from .backup_engine import BackupEngine
+from .failure_intel import evaluate as eval_failure
+from .manifest import clear_cache as clear_manifest_cache
+from .manifest import load_manifest, load_manifest_raw, upsert_override_app
 from .models import (
-    ActionResult,
+    ActionResponse,
     AppStatus,
+    ManifestResponse,
+    ManifestUpsertRequest,
     LoginRequest,
     LoginResponse,
     ServerSummary,
@@ -108,70 +118,16 @@ async def _check_url(url: Optional[str], method: str = "GET") -> Optional[UrlChe
         except Exception as e:
             return UrlCheck(ok=False, status_code=None, error=str(e))
 
-
-def _compute_status(container_info, backend_check, frontend_check):
-    # Container failure dominates.
-    stopped = [c for c in container_info if (not c.exists) or (not c.running)]
-    if stopped:
-        # Prefer first stopped for reason
-        c0 = stopped[0]
-        if not c0.exists:
-            return "DOWN", f"Container missing ({c0.name})", "Fix container name/stack, then restart app"
-        if c0.exit_code is not None:
-            return "DOWN", f"Container stopped (exit {c0.exit_code})", "Restart app"
-        return "DOWN", "Container stopped", "Restart app"
-
-    if backend_check is not None and not backend_check.ok:
-        return "DEGRADED", "Backend health failing", "Check backend logs/health"
-
-    if frontend_check is not None and not frontend_check.ok:
-        return "DEGRADED", "Frontend unreachable", "Check frontend/Caddy routing"
-
-    return "HEALTHY", "OK", "No action"
-
-
-@app.get("/api/apps", response_model=list[AppStatus])
-async def list_apps(_: dict = Depends(require_auth)):
-    manifest = load_manifest()
-    out = []
-
-    for k, a in manifest.items():
-        cinfo = get_container_info(a.containers)
-        backend_check = await _check_url(a.backend_health_url, method="GET")
-        frontend_check = await _check_url(a.frontend_url, method="HEAD")
-        overall, reason, rec = _compute_status(cinfo, backend_check, frontend_check)
-
-        out.append(
-            AppStatus(
-                key=a.key,
-                name=a.name,
-                domain=a.domain,
-                containers=a.containers,
-                container_info=cinfo,
-                backend_health_url=a.backend_health_url,
-                frontend_url=a.frontend_url,
-                backend_check=backend_check,
-                frontend_check=frontend_check,
-                overall_status=overall,
-                reason=reason,
-                recommendation=rec,
-            )
-        )
-
-    return out
-
-
-@app.get("/api/apps/{key}", response_model=AppStatus)
-async def get_app(key: str, _: dict = Depends(require_auth)):
-    manifest = load_manifest()
-    if key not in manifest:
-        raise HTTPException(status_code=404, detail="Unknown app key")
-
-    a = manifest[key]
+async def _build_app_status(a) -> AppStatus:
     cinfo = get_container_info(a.containers)
     backend_check = await _check_url(a.backend_health_url, method="GET")
     frontend_check = await _check_url(a.frontend_url, method="HEAD")
-    overall, reason, rec = _compute_status(cinfo, backend_check, frontend_check)
+    overall, failure_category, reason, rec, evidence, last_log_snippet = eval_failure(
+        containers=list(a.containers),
+        container_info=cinfo,
+        backend_check=backend_check,
+        frontend_check=frontend_check,
+    )
 
     return AppStatus(
         key=a.key,
@@ -184,15 +140,40 @@ async def get_app(key: str, _: dict = Depends(require_auth)):
         backend_check=backend_check,
         frontend_check=frontend_check,
         overall_status=overall,
+        failure_category=failure_category,
         reason=reason,
         recommendation=rec,
+        recommended_action=rec,
+        evidence=evidence or {},
+        last_log_snippet=last_log_snippet,
     )
+
+
+@app.get("/api/apps", response_model=list[AppStatus])
+async def list_apps(_: dict = Depends(require_auth)):
+    manifest = load_manifest()
+    out = []
+
+    for k, a in manifest.items():
+        out.append(await _build_app_status(a))
+
+    return out
+
+
+@app.get("/api/apps/{key}", response_model=AppStatus)
+async def get_app(key: str, _: dict = Depends(require_auth)):
+    manifest = load_manifest()
+    if key not in manifest:
+        raise HTTPException(status_code=404, detail="Unknown app key")
+
+    a = manifest[key]
+    return await _build_app_status(a)
 
 
 @app.get("/api/apps/{key}/logs")
 async def app_logs(
     key: str,
-    lines: int = Query(200, ge=10, le=5000),
+    lines: int = Query(200, ge=1, le=500),
     container: Optional[str] = None,
     _: dict = Depends(require_auth),
 ):
@@ -210,14 +191,97 @@ async def app_logs(
 
     try:
         text = tail_logs(target, lines)
-        return {"container": target, "lines": lines, "log": text}
+        return PlainTextResponse(text, media_type="text/plain; charset=utf-8")
+    except DockerNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "container_not_found", "container": target, "app_key": key},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "logs_failed", "message": str(e), "container": target, "app_key": key},
+        )
 
 
 @app.get("/api/discover")
-async def discover(_: dict = Depends(require_auth)):
-    return {"containers": [c.model_dump() for c in discover_containers()]}
+async def discover(
+    project: Optional[str] = None,
+    contains: Optional[str] = None,
+    _: dict = Depends(require_auth),
+):
+    inv = discover_inventory(project=project, contains=contains)
+    return inv.model_dump()
+
+
+def _validate_key(key: str):
+    if not (2 <= len(key) <= 32):
+        raise HTTPException(status_code=422, detail="key length must be 2–32")
+    if not re.fullmatch(r"[a-z0-9_-]+", key):
+        raise HTTPException(status_code=422, detail="key must match [a-z0-9_-]+")
+
+
+def _validate_url(u: Optional[str], field: str):
+    if not u:
+        return
+    try:
+        p = urlparse(u)
+        if p.scheme not in {"http", "https"}:
+            raise ValueError("scheme must be http(s)")
+        if not p.netloc:
+            raise ValueError("missing host")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"{field} invalid: {e}")
+
+
+@app.get("/api/manifest", response_model=ManifestResponse)
+async def get_manifest(_: dict = Depends(require_auth)):
+    return load_manifest_raw()
+
+
+@app.post("/api/manifest/apps", response_model=ManifestResponse)
+async def upsert_manifest_app(body: ManifestUpsertRequest, _: dict = Depends(require_auth)):
+    key = body.key.strip()
+    _validate_key(key)
+    _validate_url(body.backend_health_url, "backend_health_url")
+    _validate_url(body.frontend_url, "frontend_url")
+
+    if not body.containers:
+        raise HTTPException(status_code=422, detail="containers required")
+
+    if not body.allow_missing_containers:
+        existing = list_container_names()
+        missing = [c for c in body.containers if c not in existing]
+        if missing:
+            raise HTTPException(status_code=422, detail={"error": "missing_containers", "missing": missing})
+
+    merged = upsert_override_app(body.model_dump(exclude={"allow_missing_containers"}))
+    return merged
+
+
+@app.post("/api/manifest/reload")
+async def reload_manifest(_: dict = Depends(require_auth)):
+    clear_manifest_cache()
+    return {"ok": True}
+
+
+@app.get("/api/backups/plan")
+async def backups_plan(_: dict = Depends(require_auth)):
+    eng = BackupEngine()
+    return eng.generate_plan()
+
+
+@app.get("/api/backups/validate")
+async def backups_validate(_: dict = Depends(require_auth)):
+    eng = BackupEngine()
+    return eng.validate_environment()
+
+
+@app.post("/api/backups/simulate")
+async def backups_simulate(_: dict = Depends(require_auth)):
+    eng = BackupEngine()
+    plan = eng.generate_plan()
+    return {"message": "Simulation successful. No files created.", "plan": plan}
 
 
 def _rate_limit_or_raise(app_key: str):
@@ -232,16 +296,44 @@ def _rate_limit_or_raise(app_key: str):
     _rate[app_key] = lst
 
 
-async def _do_action(request: Request, key: str, action: str) -> ActionResult:
+def _client_ip(request: Request) -> str:
+    fwd = (request.headers.get("x-forwarded-for") or "").strip()
+    if fwd:
+        return fwd.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+async def _do_action(request: Request, key: str, action: str) -> ActionResponse:
     manifest = load_manifest()
     if key not in manifest:
+        audit.log_action(
+            app_key=key,
+            action=action,
+            result="fail",
+            exit_code=None,
+            message="Unknown app key",
+            client_ip=_client_ip(request),
+        )
         raise HTTPException(status_code=404, detail="Unknown app key")
 
-    _rate_limit_or_raise(key)
-
     a = manifest[key]
-    actor = getattr(request.state, "actor", "admin")
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _client_ip(request)
+
+    try:
+        _rate_limit_or_raise(key)
+    except HTTPException as e:
+        if e.status_code == 429:
+            audit.log_action(
+                app_key=key,
+                action=action,
+                result="fail",
+                exit_code=None,
+                message=str(e.detail),
+                client_ip=client_ip,
+            )
+        raise
 
     # Special case: if we restart/stop the dashboard frontend container, the HTTP connection can drop
     # because /api is proxied through that same nginx container. For that case, schedule the action
@@ -260,10 +352,10 @@ async def _do_action(request: Request, key: str, action: str) -> ActionResult:
         audit.log_action(
             app_key=key,
             action=action,
-            result="ok" if ok else "error",
-            actor=str(actor),
+            result="success" if ok else "fail",
+            exit_code=0 if ok else 1,
+            message=(err or ""),
             client_ip=str(client_ip),
-            error=err,
         )
 
         if tail_self:
@@ -273,30 +365,46 @@ async def _do_action(request: Request, key: str, action: str) -> ActionResult:
     if async_mode:
         asyncio.create_task(_run_and_audit())
         per = {name: "scheduled" for name in a.containers}
-        return ActionResult(ok=True, app_key=key, action=action, per_container=per, error=None)
+        return ActionResponse(
+            ok=True,
+            app_key=key,
+            action=action,
+            per_container=per,
+            exit_code=0,
+            message="scheduled",
+            status=await _build_app_status(a),
+        )
 
     ok, per, err = await asyncio.to_thread(action_on_containers, action, a.containers)
     audit.log_action(
         app_key=key,
         action=action,
-        result="ok" if ok else "error",
-        actor=str(actor),
+        result="success" if ok else "fail",
+        exit_code=0 if ok else 1,
+        message=(err or ""),
         client_ip=str(client_ip),
-        error=err,
     )
-    return ActionResult(ok=ok, app_key=key, action=action, per_container=per, error=err)
+    return ActionResponse(
+        ok=ok,
+        app_key=key,
+        action=action,
+        per_container=per,
+        exit_code=0 if ok else 1,
+        message=(err or "ok"),
+        status=await _build_app_status(a),
+    )
 
 
-@app.post("/api/apps/{key}/start", response_model=ActionResult)
+@app.post("/api/apps/{key}/start", response_model=ActionResponse)
 async def app_start(request: Request, key: str, _: dict = Depends(require_auth)):
     return await _do_action(request, key, "start")
 
 
-@app.post("/api/apps/{key}/stop", response_model=ActionResult)
+@app.post("/api/apps/{key}/stop", response_model=ActionResponse)
 async def app_stop(request: Request, key: str, _: dict = Depends(require_auth)):
     return await _do_action(request, key, "stop")
 
 
-@app.post("/api/apps/{key}/restart", response_model=ActionResult)
+@app.post("/api/apps/{key}/restart", response_model=ActionResponse)
 async def app_restart(request: Request, key: str, _: dict = Depends(require_auth)):
     return await _do_action(request, key, "restart")

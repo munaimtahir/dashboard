@@ -1,4 +1,5 @@
 import React from 'react'
+import { Link } from 'react-router-dom'
 import Card from '../components/Card.jsx'
 import AppGrid from '../components/AppGrid.jsx'
 import { api } from '../api.js'
@@ -45,7 +46,11 @@ export default function Overview() {
           <div className="title">Dashboard v1</div>
           <div className="subtitle">Server and app health</div>
         </div>
-        <button className="btn" onClick={load}>Refresh</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Link to="/discover" className="btn">Discover</Link>
+          <Link to="/backups" className="btn">Backups</Link>
+          <button className="btn" onClick={load}>Refresh</button>
+        </div>
       </div>
 
       {error ? <div className="card" style={{ borderColor: 'rgba(243,156,18,0.35)' }}>{error}</div> : null}

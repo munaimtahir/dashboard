@@ -5,6 +5,8 @@ import { clearToken, getToken } from './api.js'
 import Login from './pages/Login.jsx'
 import Overview from './pages/Overview.jsx'
 import AppDetail from './pages/AppDetail.jsx'
+import Discover from './pages/Discover.jsx'
+import Backups from './pages/Backups.jsx'
 
 function RequireAuth({ children }) {
   const loc = useLocation()
@@ -32,6 +34,8 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<RequireAuth><Overview /></RequireAuth>} />
       <Route path="/app/:key" element={<RequireAuth><AppDetail /></RequireAuth>} />
+      <Route path="/discover" element={<RequireAuth><Discover /></RequireAuth>} />
+      <Route path="/backups" element={<RequireAuth><Backups /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

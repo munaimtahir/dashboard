@@ -20,18 +20,20 @@ def _connect() -> sqlite3.Connection:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS audit (
+            CREATE TABLE IF NOT EXISTS actions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              ts INTEGER NOT NULL,
-              app_key TEXT,
-              action TEXT,
-              result TEXT,
-              actor TEXT,
-              client_ip TEXT,
-              error TEXT
-            )
+              timestamp INTEGER NOT NULL,
+              app_key TEXT NOT NULL,
+              action TEXT NOT NULL,
+              result TEXT NOT NULL,
+              exit_code INTEGER,
+              message TEXT,
+              client_ip TEXT
+            );
             """
         )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_ts ON actions(timestamp);")
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_app ON actions(app_key);")
         _conn.commit()
     return _conn
 
@@ -46,15 +48,23 @@ def log_action(
     *,
     app_key: str,
     action: str,
-    result: str,
-    actor: str,
     client_ip: str,
-    error: str | None,
+    result: str,
+    exit_code: int | None,
+    message: str | None,
 ):
     with _lock:
         conn = _connect()
         conn.execute(
-            "INSERT INTO audit (ts, app_key, action, result, actor, client_ip, error) VALUES (?,?,?,?,?,?,?)",
-            (int(time.time()), app_key, action, result, actor, client_ip, (error or "")[:500]),
+            "INSERT INTO actions (timestamp, app_key, action, result, exit_code, message, client_ip) VALUES (?,?,?,?,?,?,?)",
+            (
+                int(time.time()),
+                (app_key or "")[:100],
+                (action or "")[:20],
+                (result or "")[:20],
+                exit_code,
+                (message or "")[:2000],
+                (client_ip or "")[:100],
+            ),
         )
         conn.commit()

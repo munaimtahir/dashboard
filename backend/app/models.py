@@ -37,6 +37,8 @@ class ContainerInfo(BaseModel):
     status: str
     running: bool
     exit_code: Optional[int] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 class UrlCheck(BaseModel):
@@ -56,8 +58,12 @@ class AppStatus(BaseModel):
     backend_check: Optional[UrlCheck] = None
     frontend_check: Optional[UrlCheck] = None
     overall_status: str
+    failure_category: Optional[str] = None
     reason: str
     recommendation: str
+    recommended_action: Optional[str] = None
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    last_log_snippet: Optional[str] = None
 
 
 class DiscoverContainer(BaseModel):
@@ -65,8 +71,45 @@ class DiscoverContainer(BaseModel):
     name: str
     image: str
     status: str
-    state: str
+    state: Dict[str, Any] = Field(default_factory=dict)
+    created: Optional[str] = None
+    ports: List[str] = Field(default_factory=list)
+    compose_project: Optional[str] = None
+    compose_service: Optional[str] = None
     labels: Dict[str, Any] = Field(default_factory=dict)
+
+class DiscoverComposeProject(BaseModel):
+    project: str
+    services: List[str] = Field(default_factory=list)
+    containers: List[str] = Field(default_factory=list)
+
+
+class DiscoverResponse(BaseModel):
+    containers: List[DiscoverContainer] = Field(default_factory=list)
+    compose_projects: List[DiscoverComposeProject] = Field(default_factory=list)
+
+
+class ManifestAppEntry(BaseModel):
+    key: str
+    name: str
+    domain: Optional[str] = None
+    containers: List[str] = Field(default_factory=list)
+    backend_health_url: Optional[str] = None
+    frontend_url: Optional[str] = None
+
+
+class ManifestResponse(BaseModel):
+    apps: List[ManifestAppEntry] = Field(default_factory=list)
+
+
+class ManifestUpsertRequest(BaseModel):
+    key: str
+    name: str
+    domain: Optional[str] = None
+    containers: List[str] = Field(default_factory=list)
+    backend_health_url: Optional[str] = None
+    frontend_url: Optional[str] = None
+    allow_missing_containers: bool = False
 
 
 class ActionResult(BaseModel):
@@ -75,3 +118,13 @@ class ActionResult(BaseModel):
     action: str
     per_container: Dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
+
+
+class ActionResponse(BaseModel):
+    ok: bool
+    app_key: str
+    action: str
+    per_container: Dict[str, str] = Field(default_factory=dict)
+    exit_code: Optional[int] = None
+    message: Optional[str] = None
+    status: Optional[AppStatus] = None

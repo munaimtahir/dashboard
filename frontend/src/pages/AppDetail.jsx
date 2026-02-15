@@ -3,7 +3,9 @@ import { Link, useParams } from 'react-router-dom'
 import Card from '../components/Card.jsx'
 import Badge from '../components/Badge.jsx'
 import Button from '../components/Button.jsx'
+import ConfirmModal from '../components/ConfirmModal.jsx'
 import LogsViewer from '../components/LogsViewer.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { api } from '../api.js'
 
 export default function AppDetail() {
@@ -11,11 +13,14 @@ export default function AppDetail() {
   const [app, setApp] = React.useState(null)
   const [error, setError] = React.useState('')
   const [busy, setBusy] = React.useState(false)
+  const [actionFeedback, setActionFeedback] = React.useState(null)
+  const [pendingAction, setPendingAction] = React.useState(null)
 
   const [lines, setLines] = React.useState(200)
   const [log, setLog] = React.useState('')
   const [logError, setLogError] = React.useState('')
   const [logLoading, setLogLoading] = React.useState(false)
+  const [autoRefresh, setAutoRefresh] = React.useState(false)
 
   async function load() {
     setError('')
@@ -31,8 +36,8 @@ export default function AppDetail() {
     setLogError('')
     setLogLoading(true)
     try {
-      const r = await api.logs(key, lines)
-      setLog(r.log || '')
+      const text = await api.logs(key, lines)
+      setLog(text || '')
     } catch (e) {
       setLogError(e.message || String(e))
     } finally {
@@ -42,17 +47,25 @@ export default function AppDetail() {
 
   React.useEffect(() => { load() }, [key])
   React.useEffect(() => { loadLogs() }, [key, lines])
+  React.useEffect(() => {
+    if (!autoRefresh) return
+    const id = setInterval(() => { loadLogs() }, 5000)
+    return () => clearInterval(id)
+  }, [autoRefresh, key, lines])
 
-  async function doAction(action) {
-    if (!confirm(`Confirm: ${action} ${key}?`)) return
+  async function runAction(action) {
     setBusy(true)
     setError('')
+    setActionFeedback(null)
     try {
-      await api.action(key, action)
-      await load()
+      const res = await api.action(key, action)
+      if (res?.status) setApp(res.status)
+      else await load()
       await loadLogs()
+      setActionFeedback({ ok: !!res?.ok, action, exitCode: res?.exit_code, message: res?.message || '' })
     } catch (e) {
       setError(e.message || String(e))
+      setActionFeedback({ ok: false, action, exitCode: null, message: e.message || String(e) })
     } finally {
       setBusy(false)
     }
@@ -91,10 +104,25 @@ export default function AppDetail() {
             <div style={{ gridColumn: 'span 6' }}>
               <Card title="Actions">
                 <div className="small" style={{ marginBottom: 10 }}>Allowlist only. Rate limit: 3 actions / 5 minutes.</div>
+                {actionFeedback ? (
+                  <div style={{ marginBottom: 10 }}>
+                    <Badge
+                      label={`${actionFeedback.ok ? 'Success' : 'Failure'}: ${actionFeedback.action}${actionFeedback.exitCode !== null && actionFeedback.exitCode !== undefined ? ` (exit ${actionFeedback.exitCode})` : ''}`}
+                      status={actionFeedback.ok ? 'HEALTHY' : 'DOWN'}
+                    />
+                    {actionFeedback.message ? <div className="small" style={{ marginTop: 6 }}>{actionFeedback.message}</div> : null}
+                  </div>
+                ) : null}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button variant="primary" disabled={busy} onClick={() => doAction('start')}>Start</Button>
-                  <Button variant="danger" disabled={busy} onClick={() => doAction('stop')}>Stop</Button>
-                  <Button disabled={busy} onClick={() => doAction('restart')}>Restart</Button>
+                  <Button variant="primary" disabled={busy} onClick={() => setPendingAction('start')}>
+                    {busy && pendingAction === 'start' ? <span className="btnInline"><Spinner size={14} /> Starting</span> : 'Start'}
+                  </Button>
+                  <Button variant="danger" disabled={busy} onClick={() => setPendingAction('stop')}>
+                    {busy && pendingAction === 'stop' ? <span className="btnInline"><Spinner size={14} /> Stopping</span> : 'Stop'}
+                  </Button>
+                  <Button disabled={busy} onClick={() => setPendingAction('restart')}>
+                    {busy && pendingAction === 'restart' ? <span className="btnInline"><Spinner size={14} /> Restarting</span> : 'Restart'}
+                  </Button>
                 </div>
               </Card>
             </div>
@@ -135,9 +163,26 @@ export default function AppDetail() {
             log={log}
             loading={logLoading}
             error={logError}
+            autoRefresh={autoRefresh}
+            setAutoRefresh={setAutoRefresh}
+            onRefresh={loadLogs}
           />
         </>
       ) : null}
+
+      <ConfirmModal
+        open={!!pendingAction && !busy}
+        title="Confirm action"
+        message={`Are you sure you want to ${pendingAction} ${app?.name || key}?`}
+        confirmLabel={`Yes, ${pendingAction}`}
+        onClose={() => setPendingAction(null)}
+        onConfirm={async () => {
+          const action = pendingAction
+          setPendingAction(action)
+          await runAction(action)
+          setPendingAction(null)
+        }}
+      />
     </div>
   )
 }

@@ -89,4 +89,6 @@ export const api = {
   }),
   opsLogs: (key, lines) => requestText(`/api/apps/${encodeURIComponent(key)}/ops/logs?lines=${lines}`),
   auditLogs: (limit) => request(`/api/audit/logs?limit=${limit || 50}`),
+  inspect: (key, fresh = 0) => request(`/api/apps/${encodeURIComponent(key)}/inspect?fresh=${fresh}`),
+  inspectSummary: () => request('/api/apps/inspect/summary'),
 }

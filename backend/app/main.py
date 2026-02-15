@@ -14,13 +14,11 @@ from docker.errors import NotFound as DockerNotFound
 
 from . import audit
 from .auth import get_admin_password, make_token, require_auth
-from .docker_ops import (
-    action_on_containers,
-    discover_inventory,
-    get_container_info,
     list_container_names,
     tail_logs,
+    docker_client as get_docker_client,
 )
+from . import app_inspector
 from .backup_engine import BackupEngine
 from .failure_intel import evaluate as eval_failure
 from .manifest import clear_cache as clear_manifest_cache
@@ -38,6 +36,7 @@ from .models import (
     InventorySyncResponse,
     OpsStatusResponse,
     OpsActionResponse,
+    AppInspectorSummary,
 )
 from .system_ops import caddy_status, docker_status, read_cpu_percent, read_disk_usage, read_loadavg, read_meminfo, read_uptime_seconds
 from .inventory_sync import scan_inventory, write_manifest_override
@@ -51,6 +50,7 @@ app = FastAPI(title="Dashboard v1", version="1.0.0")
 
 # In-memory, per-app action limiter: max 3 actions per app per 5 minutes.
 _rate: Dict[str, list[float]] = {}
+_inspector_cache: Dict[str, tuple[float, Any]] = {}
 
 @app.on_event("startup")
 async def _startup():
@@ -174,6 +174,92 @@ async def get_app(key: str, _: dict = Depends(require_auth)):
 
     a = manifest[key]
     return await _build_app_status(a)
+
+
+# ============================================================================
+# APP INSPECTOR ENDPOINTS
+# ============================================================================
+
+@app.get("/api/apps/{key}/inspect")
+async def inspect_app_endpoint(
+    key: str,
+    fresh: int = Query(0, description="1 to bypass cache"),
+    _: dict = Depends(require_auth)
+):
+    manifest = load_manifest()
+    if key not in manifest:
+        raise HTTPException(status_code=404, detail="Unknown app key")
+
+    now = time.time()
+    if not fresh and key in _inspector_cache:
+        ts, data = _inspector_cache[key]
+        if now - ts < 30:
+            return data
+
+    a = manifest[key]
+    d_client = get_docker_client()
+    caddy_map = app_inspector.get_caddy_map()
+
+    # Run in thread to avoid blocking FastAPI event loop
+    data = await asyncio.to_thread(app_inspector.inspect_app, key, a, d_client, caddy_map)
+
+    _inspector_cache[key] = (now, data)
+    return data
+
+
+@app.get("/api/apps/inspect/summary", response_model=List[AppInspectorSummary])
+async def inspect_summary_endpoint(_: dict = Depends(require_auth)):
+    manifest = load_manifest()
+    d_client = get_docker_client()
+    caddy_map = app_inspector.get_caddy_map()
+
+    out = []
+    for key, a in manifest.items():
+        data = None
+        if key in _inspector_cache:
+            ts, cached_data = _inspector_cache[key]
+            if time.time() - ts < 30:
+                data = cached_data
+
+        if not data:
+            data = await asyncio.to_thread(app_inspector.inspect_app, key, a, d_client, caddy_map)
+            _inspector_cache[key] = (time.time(), data)
+
+        # key, status, containers_count, volumes_count, db_count, estimated_storage_mb, issues_count
+        storage = data.get('storage', {})
+        est_mb = (storage.get('folder_size_mb') or 0.0)
+        est_mb += (storage.get('media_size_mb') or 0.0)
+        est_mb += (storage.get('uploads_size_mb') or 0.0)
+        
+        for v in storage.get('named_volumes', []):
+            est_mb += (v.get('size_estimate_mb') or 0.0)
+        
+        for b in storage.get('bind_mounts', []):
+            est_mb += (b.get('size_mb') or 0.0)
+
+        # Determine overall status from containers
+        containers = data.get('containers', [])
+        status = "unknown"
+        if containers:
+            if all(c.get('status') == 'running' for c in containers):
+                status = "running"
+            elif any(c.get('status') == 'running' for c in containers):
+                status = "partial"
+            else:
+                status = "stopped"
+        elif not data.get('identity', {}).get('folder_exists'):
+            status = "missing"
+
+        out.append(AppInspectorSummary(
+            key=key,
+            status=status,
+            containers_count=len(containers),
+            volumes_count=len(storage.get('named_volumes', [])),
+            db_count=len(data.get('databases', [])),
+            estimated_storage_mb=round(est_mb, 2),
+            issues_count=len(data.get('issues', []))
+        ))
+    return out
 
 
 @app.get("/api/apps/{key}/logs")

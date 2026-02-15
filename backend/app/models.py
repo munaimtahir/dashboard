@@ -166,3 +166,14 @@ class OpsActionResponse(BaseModel):
     tail: str
     message: str
     updated_app_status: Optional[AppStatus] = None
+
+
+class AppInspectorSummary(BaseModel):
+    """Lightweight summary for all apps"""
+    key: str
+    status: str
+    containers_count: int
+    volumes_count: int
+    db_count: int
+    estimated_storage_mb: float
+    issues_count: int

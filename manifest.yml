@@ -29,3 +29,50 @@ apps:
       - ops_dashboard_redis
     backend_health_url: http://127.0.0.1:18000/health
     frontend_url: https://ops.alshifalab.pk
+
+  - key: radreport
+    name: Radreport (RIMS)
+    domain: rims.alshifalab.pk
+    containers:
+      - rims_db_prod
+      - rims_backend_prod
+      - rims_frontend_prod
+    backend_health_url: http://127.0.0.1:8015/api/health/
+    frontend_url: https://rims.alshifalab.pk
+
+  - key: fmu-platform
+    name: FMU Platform (SIMS)
+    domain: sims.alshifalab.pk
+    containers:
+      - fmu_db
+      - fmu_redis
+      - fmu_backend
+      - fmu_frontend
+    backend_health_url: http://127.0.0.1:8010/api/health/
+    frontend_url: https://sims.alshifalab.pk
+
+  - key: pgsims
+    name: PGSIMS
+    domain: pgsims.alshifalab.pk
+    containers:
+      - pgsims_db
+      - pgsims_redis
+      - pgsims_backend
+      - pgsims_worker
+      - pgsims_beat
+      - pgsims_frontend
+    backend_health_url: http://127.0.0.1:8014/api/health/
+    frontend_url: https://pgsims.alshifalab.pk
+
+  - key: consult
+    name: Consult
+    domain: consult.alshifalab.pk
+    containers:
+      - consult_db
+      - consult_redis
+      - consult_backend
+      - consult_frontend
+      - consult_nginx
+    backend_health_url: http://127.0.0.1:8011/api/health/
+    frontend_url: https://consult.alshifalab.pk
+

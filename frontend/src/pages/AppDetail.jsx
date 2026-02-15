@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import Card from '../components/Card.jsx'
 import Badge from '../components/Badge.jsx'
@@ -8,25 +8,72 @@ import LogsViewer from '../components/LogsViewer.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { api } from '../api.js'
 
+function DeployModal({ open, appKey, onClose, onConfirm, busy }) {
+  const [input, setInput] = useState('')
+  const expected = `DEPLOY ${appKey}`
+
+  useEffect(() => { if (open) setInput('') }, [open])
+
+  if (!open) return null
+
+  return (
+    <div className="modalOverlay" role="dialog" aria-modal="true">
+      <div className="modal">
+        <div className="modalTitle">Deploy {appKey}</div>
+        <div className="modalBody">
+          <div style={{ marginBottom: 10, color: '#e74c3c' }}>
+            ⚠️ This will run the deploy script and may result in downtime.
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            Type <code>{expected}</code> to confirm:
+          </div>
+          <input
+            className="input"
+            autoFocus
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder={expected}
+          />
+        </div>
+        <div className="modalActions">
+          <Button disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button
+            variant="danger"
+            disabled={busy || input !== expected}
+            onClick={() => onConfirm(input)}
+          >
+            {busy ? <span className="btnInline"><Spinner size={14} /> Deploying</span> : 'Deploy'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function AppDetail() {
   const { key } = useParams()
-  const [app, setApp] = React.useState(null)
-  const [error, setError] = React.useState('')
-  const [busy, setBusy] = React.useState(false)
-  const [actionFeedback, setActionFeedback] = React.useState(null)
-  const [pendingAction, setPendingAction] = React.useState(null)
+  const [app, setApp] = useState(null)
+  const [opsStatus, setOpsStatus] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [actionFeedback, setActionFeedback] = useState(null)
+  const [pendingAction, setPendingAction] = useState(null)
 
-  const [lines, setLines] = React.useState(200)
-  const [log, setLog] = React.useState('')
-  const [logError, setLogError] = React.useState('')
-  const [logLoading, setLogLoading] = React.useState(false)
-  const [autoRefresh, setAutoRefresh] = React.useState(false)
+  const [lines, setLines] = useState(200)
+  const [log, setLog] = useState('')
+  const [logError, setLogError] = useState('')
+  const [logLoading, setLogLoading] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useState(false)
 
   async function load() {
     setError('')
     try {
-      const a = await api.app(key)
+      const [a, s] = await Promise.all([
+        api.app(key),
+        api.opsStatus(key)
+      ])
       setApp(a)
+      setOpsStatus(s)
     } catch (e) {
       setError(e.message || String(e))
     }
@@ -36,6 +83,18 @@ export default function AppDetail() {
     setLogError('')
     setLogLoading(true)
     try {
+      // Prefer ops logs if available, fallback to container logs if not configured ???
+      // Requirement says "GET /api/apps/{key}/ops/logs?lines=200"
+      // But we should probably look at what the user wants. 
+      // Existing log viewer uses container logs. Ops logs are different (execution logs).
+      // Requirement: "Link to view log tail (reuse existing log viewer or add modal)" on /ops-jobs
+      // For App Detail, let's keep showing container logs in the main viewer, 
+      // but maybe show ops logs in the feedback or a separate tab? 
+      // The instruction says "GET /api/apps/{key}/ops/logs" is for ops logs.
+      // I'll stick to container logs for the main viewer for now to keep existing functionality,
+      // as ops logs are ephemeral for the action.
+      // Wait, "App Detail: Ops panel...". 
+
       const text = await api.logs(key, lines)
       setLog(text || '')
     } catch (e) {
@@ -45,24 +104,45 @@ export default function AppDetail() {
     }
   }
 
-  React.useEffect(() => { load() }, [key])
-  React.useEffect(() => { loadLogs() }, [key, lines])
-  React.useEffect(() => {
+  useEffect(() => { load() }, [key])
+  useEffect(() => { loadLogs() }, [key, lines])
+  useEffect(() => {
     if (!autoRefresh) return
     const id = setInterval(() => { loadLogs() }, 5000)
     return () => clearInterval(id)
   }, [autoRefresh, key, lines])
 
-  async function runAction(action) {
+  async function runAction(action, confirmHeader) {
     setBusy(true)
     setError('')
     setActionFeedback(null)
     try {
-      const res = await api.action(key, action)
-      if (res?.status) setApp(res.status)
+      let res
+      if (action === 'start') res = await api.opsStart(key)
+      else if (action === 'stop') res = await api.opsStop(key)
+      else if (action === 'restart') res = await api.opsRestart(key)
+      else if (action === 'deploy') res = await api.opsDeploy(key, confirmHeader)
+      else throw new Error("Unknown action")
+
+      if (res?.updated_app_status) setApp(res.updated_app_status)
       else await load()
+
+      // Update usage/container logs
       await loadLogs()
-      setActionFeedback({ ok: !!res?.ok, action, exitCode: res?.exit_code, message: res?.message || '' })
+
+      setActionFeedback({
+        ok: res?.success,
+        action,
+        exitCode: res?.exit_code,
+        message: res?.message || '',
+        tail: res?.tail
+      })
+
+      // If failed, show error in main error box too?
+      if (!res?.success) {
+        setError(res?.message || 'Action failed')
+      }
+
     } catch (e) {
       setError(e.message || String(e))
       setActionFeedback({ ok: false, action, exitCode: null, message: e.message || String(e) })
@@ -70,6 +150,9 @@ export default function AppDetail() {
       setBusy(false)
     }
   }
+
+  const isConfigured = opsStatus && opsStatus.configured
+  const available = new Set(opsStatus ? opsStatus.available_actions : [])
 
   return (
     <div className="container">
@@ -102,26 +185,59 @@ export default function AppDetail() {
               </Card>
             </div>
             <div style={{ gridColumn: 'span 6' }}>
-              <Card title="Actions">
-                <div className="small" style={{ marginBottom: 10 }}>Allowlist only. Rate limit: 3 actions / 5 minutes.</div>
+              <Card title="Ops Actions">
+                <div className="small" style={{ marginBottom: 10 }}>
+                  {isConfigured
+                    ? 'Safe ops scripts allowlisted.'
+                    : 'Ops scripts not configured for this app.'}
+                </div>
+
                 {actionFeedback ? (
-                  <div style={{ marginBottom: 10 }}>
-                    <Badge
-                      label={`${actionFeedback.ok ? 'Success' : 'Failure'}: ${actionFeedback.action}${actionFeedback.exitCode !== null && actionFeedback.exitCode !== undefined ? ` (exit ${actionFeedback.exitCode})` : ''}`}
-                      status={actionFeedback.ok ? 'HEALTHY' : 'DOWN'}
-                    />
-                    {actionFeedback.message ? <div className="small" style={{ marginTop: 6 }}>{actionFeedback.message}</div> : null}
+                  <div style={{ marginBottom: 10, padding: 8, background: actionFeedback.ok ? '#f0fff4' : '#fff5f5', borderRadius: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Badge
+                        label={`${actionFeedback.ok ? 'Success' : 'Failure'}: ${actionFeedback.action}`}
+                        status={actionFeedback.ok ? 'HEALTHY' : 'DOWN'}
+                      />
+                      {actionFeedback.exitCode !== null && <span className="small">Exit: {actionFeedback.exitCode}</span>}
+                    </div>
+                    {actionFeedback.message && <div className="small" style={{ marginTop: 6, fontWeight: 'bold' }}>{actionFeedback.message}</div>}
+                    {actionFeedback.tail && (
+                      <div className="code-block" style={{ marginTop: 6, fontSize: 11, maxHeight: 100, overflow: 'auto' }}>
+                        {actionFeedback.tail}
+                      </div>
+                    )}
                   </div>
                 ) : null}
+
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button variant="primary" disabled={busy} onClick={() => setPendingAction('start')}>
-                    {busy && pendingAction === 'start' ? <span className="btnInline"><Spinner size={14} /> Starting</span> : 'Start'}
+                  <Button
+                    variant="primary"
+                    disabled={!isConfigured || busy || !available.has('start')}
+                    onClick={() => setPendingAction('start')}
+                  >
+                    {busy && pendingAction === 'start' ? <Spinner size={14} /> : 'Start'}
                   </Button>
-                  <Button variant="danger" disabled={busy} onClick={() => setPendingAction('stop')}>
-                    {busy && pendingAction === 'stop' ? <span className="btnInline"><Spinner size={14} /> Stopping</span> : 'Stop'}
+                  <Button
+                    variant="danger"
+                    disabled={!isConfigured || busy || !available.has('stop')}
+                    onClick={() => setPendingAction('stop')}
+                  >
+                    {busy && pendingAction === 'stop' ? <Spinner size={14} /> : 'Stop'}
                   </Button>
-                  <Button disabled={busy} onClick={() => setPendingAction('restart')}>
-                    {busy && pendingAction === 'restart' ? <span className="btnInline"><Spinner size={14} /> Restarting</span> : 'Restart'}
+                  <Button
+                    disabled={!isConfigured || busy || !available.has('restart')}
+                    onClick={() => setPendingAction('restart')}
+                  >
+                    {busy && pendingAction === 'restart' ? <Spinner size={14} /> : 'Restart'}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    disabled={!isConfigured || busy || !available.has('deploy')}
+                    style={{ marginLeft: 'auto', background: isConfigured && available.has('deploy') ? '#8e44ad' : undefined }}
+                    onClick={() => setPendingAction('deploy')}
+                  >
+                    {busy && pendingAction === 'deploy' ? <Spinner size={14} /> : 'Deploy'}
                   </Button>
                 </div>
               </Card>
@@ -170,16 +286,30 @@ export default function AppDetail() {
         </>
       ) : null}
 
+      {/* Standard Confirm Modal for Start/Stop/Restart */}
       <ConfirmModal
-        open={!!pendingAction && !busy}
+        open={!!pendingAction && pendingAction !== 'deploy' && !busy}
         title="Confirm action"
         message={`Are you sure you want to ${pendingAction} ${app?.name || key}?`}
         confirmLabel={`Yes, ${pendingAction}`}
         onClose={() => setPendingAction(null)}
         onConfirm={async () => {
           const action = pendingAction
-          setPendingAction(action)
+          setPendingAction(action) // Keep it set to show busy state in buttons (or handling via busy state)
           await runAction(action)
+          setPendingAction(null)
+        }}
+      />
+
+      {/* Special Deploy Modal */}
+      <DeployModal
+        open={pendingAction === 'deploy' && !busy} // Hide if busy to prevent double submit, but we are handling busy inside 
+        appKey={key}
+        busy={busy}
+        onClose={() => setPendingAction(null)}
+        onConfirm={async (input) => {
+          // Modal handles validation, calls this
+          await runAction('deploy', input)
           setPendingAction(null)
         }}
       />

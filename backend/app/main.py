@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from typing import Dict, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Header
 from fastapi.responses import PlainTextResponse
 from docker.errors import NotFound as DockerNotFound
 
@@ -24,7 +24,7 @@ from .docker_ops import (
 from .backup_engine import BackupEngine
 from .failure_intel import evaluate as eval_failure
 from .manifest import clear_cache as clear_manifest_cache
-from .manifest import load_manifest, load_manifest_raw, upsert_override_app
+from .manifest import load_manifest, load_manifest_raw, upsert_override_app, OVERRIDE_MANIFEST_PATH
 from .models import (
     ActionResponse,
     AppStatus,
@@ -34,8 +34,14 @@ from .models import (
     LoginResponse,
     ServerSummary,
     UrlCheck,
+    InventoryPreviewResponse,
+    InventorySyncResponse,
+    OpsStatusResponse,
+    OpsActionResponse,
 )
 from .system_ops import caddy_status, docker_status, read_cpu_percent, read_disk_usage, read_loadavg, read_meminfo, read_uptime_seconds
+from .inventory_sync import scan_inventory, write_manifest_override
+from .app_ops import execute_ops_action, get_ops_status, OpsError
 
 
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "3"))
@@ -274,7 +280,8 @@ async def backups_plan(_: dict = Depends(require_auth)):
 @app.get("/api/backups/validate")
 async def backups_validate(_: dict = Depends(require_auth)):
     eng = BackupEngine()
-    return eng.validate_environment()
+    plan = eng.generate_plan()
+    return plan["summary"]
 
 
 @app.post("/api/backups/simulate")
@@ -408,3 +415,228 @@ async def app_stop(request: Request, key: str, _: dict = Depends(require_auth)):
 @app.post("/api/apps/{key}/restart", response_model=ActionResponse)
 async def app_restart(request: Request, key: str, _: dict = Depends(require_auth)):
     return await _do_action(request, key, "restart")
+
+
+# ============================================================================
+# INVENTORY SYNC ENDPOINTS
+# ============================================================================
+
+@app.post("/api/inventory/preview", response_model=InventoryPreviewResponse)
+async def inventory_preview(_: dict = Depends(require_auth)):
+    """
+    Preview inventory sync changes without writing to disk.
+    Shows what apps would be added/removed/updated.
+    """
+    # Load existing override manifest
+    existing_manifest = None
+    if os.path.exists(OVERRIDE_MANIFEST_PATH):
+        import yaml
+        with open(OVERRIDE_MANIFEST_PATH, "r", encoding="utf-8") as f:
+            existing_manifest = yaml.safe_load(f) or {}
+
+    # Scan inventory
+    result = scan_inventory(existing_manifest)
+
+    return InventoryPreviewResponse(
+        summary={
+            "added": result.added,
+            "removed": result.removed,
+            "updated": result.updated,
+            "skipped_folders": result.skipped_folders,
+        },
+        preview_manifest=result.preview_manifest,
+    )
+
+
+@app.post("/api/inventory/sync", response_model=InventorySyncResponse)
+async def inventory_sync(_: dict = Depends(require_auth)):
+    """
+    Perform inventory sync and write to manifest.override.yml.
+    Returns summary of changes and new manifest.
+    """
+    # Load existing override manifest
+    existing_manifest = None
+    if os.path.exists(OVERRIDE_MANIFEST_PATH):
+        import yaml
+        with open(OVERRIDE_MANIFEST_PATH, "r", encoding="utf-8") as f:
+            existing_manifest = yaml.safe_load(f) or {}
+
+    # Scan inventory
+    result = scan_inventory(existing_manifest)
+
+    # Write to disk
+    write_manifest_override(result.preview_manifest, OVERRIDE_MANIFEST_PATH)
+
+    # Clear cache to reload
+    clear_manifest_cache()
+
+    # Return new merged manifest
+    new_manifest = load_manifest_raw()
+
+    return InventorySyncResponse(
+        summary={
+            "added": result.added,
+            "removed": result.removed,
+            "updated": result.updated,
+            "skipped_folders": result.skipped_folders,
+        },
+        manifest=new_manifest,
+    )
+
+
+# ============================================================================
+# OPS ENDPOINTS
+# ============================================================================
+
+@app.get("/api/apps/{key}/ops/status", response_model=OpsStatusResponse)
+async def ops_status(key: str, _: dict = Depends(require_auth)):
+    """Get ops configuration status for an app"""
+    manifest = load_manifest()
+    if key not in manifest:
+        raise HTTPException(status_code=404, detail="Unknown app key")
+
+    app = manifest[key]
+    status = get_ops_status(key, app.folder)
+
+    return OpsStatusResponse(**status)
+
+
+async def _execute_ops_and_audit(
+    request: Request,
+    key: str,
+    action: str,
+    confirm_header: Optional[str] = None,
+) -> OpsActionResponse:
+    """Execute ops action and audit the result"""
+    manifest = load_manifest()
+    if key not in manifest:
+        raise HTTPException(status_code=404, detail="Unknown app key")
+
+    app = manifest[key]
+    client_ip = _client_ip(request)
+
+    try:
+        # Execute ops action
+        result = execute_ops_action(
+            app_key=key,
+            app_folder=app.folder,
+            action=action,
+            confirm_header=confirm_header,
+        )
+
+        # Audit the action
+        audit.log_action(
+            app_key=key,
+            action=f"ops:{action}",
+            result="success" if result.success else "fail",
+            exit_code=result.exit_code,
+            message=result.message,
+            client_ip=client_ip,
+        )
+
+        # Get updated app status
+        updated_status = await _build_app_status(app)
+
+        return OpsActionResponse(
+            success=result.success,
+            exit_code=result.exit_code,
+            log_file=result.log_file,
+            tail=result.tail,
+            message=result.message,
+            updated_app_status=updated_status,
+        )
+
+    except OpsError as e:
+        # Audit the failure
+        audit.log_action(
+            app_key=key,
+            action=f"ops:{action}",
+            result="fail",
+            exit_code=None,
+            message=e.message,
+            client_ip=client_ip,
+        )
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+
+
+@app.post("/api/apps/{key}/ops/start", response_model=OpsActionResponse)
+async def ops_start(request: Request, key: str, _: dict = Depends(require_auth)):
+    """Execute start ops script for an app"""
+    return await _execute_ops_and_audit(request, key, "start")
+
+
+@app.post("/api/apps/{key}/ops/stop", response_model=OpsActionResponse)
+async def ops_stop(request: Request, key: str, _: dict = Depends(require_auth)):
+    """Execute stop ops script for an app"""
+    return await _execute_ops_and_audit(request, key, "stop")
+
+
+@app.post("/api/apps/{key}/ops/restart", response_model=OpsActionResponse)
+async def ops_restart(request: Request, key: str, _: dict = Depends(require_auth)):
+    """Execute restart ops script for an app"""
+    return await _execute_ops_and_audit(request, key, "restart")
+
+
+@app.post("/api/apps/{key}/ops/deploy", response_model=OpsActionResponse)
+async def ops_deploy(
+    request: Request,
+    key: str,
+    x_confirm: Optional[str] = Header(None),
+    _: dict = Depends(require_auth),
+):
+    """
+    Execute deploy ops script for an app.
+    Requires confirmation header: X-Confirm: DEPLOY <key>
+    Rate limited: 1 per app per 10 minutes.
+    """
+    return await _execute_ops_and_audit(request, key, "deploy", confirm_header=x_confirm)
+
+
+@app.get("/api/apps/{key}/ops/logs")
+async def ops_logs(
+    key: str,
+    lines: int = Query(200, ge=1, le=1000),
+    _: dict = Depends(require_auth),
+):
+    """
+    Get ops logs for the most recent operation.
+    Returns plain text log content.
+    """
+    manifest = load_manifest()
+    if key not in manifest:
+        raise HTTPException(status_code=404, detail="Unknown app key")
+
+    # Find most recent log file for this app
+    from pathlib import Path
+    from .app_ops import OPS_LOGS_DIR
+
+    logs_dir = Path(OPS_LOGS_DIR)
+    if not logs_dir.exists():
+        raise HTTPException(status_code=404, detail="No ops logs found")
+
+    # Find log files for this app
+    log_files = sorted(
+        [f for f in logs_dir.glob(f"{key}_*.log")],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not log_files:
+        raise HTTPException(status_code=404, detail="No ops logs found for this app")
+
+    # Read most recent log
+    log_file = log_files[0]
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+            tail_lines = all_lines[-lines:]
+            content = "".join(tail_lines)
+        return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read log: {str(e)}")
+
+
+@app.get("/api/audit/logs")
+async def audit_logs(limit: int = Query(50, ge=1, le=200), _: dict = Depends(require_auth)):
+    return audit.list_recent_actions(limit)
+

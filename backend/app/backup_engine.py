@@ -68,12 +68,19 @@ class BackupEngine:
     Dry-run only planner. No writes. No pg_dump / tar execution.
     """
 
+    def _to_local_path(self, host_path: str) -> str:
+        """
+        Maps a host-side path (e.g. /home/munaim/srv/...) to a local path (e.g. /host/home/munaim/srv/...)
+        """
+        if not host_path:
+            return ""
+        if host_path.startswith(HOST_ROOT):
+             return host_path
+        return os.path.join(HOST_ROOT, host_path.lstrip("/"))
+
     def _resolve_app_folder(self, app: ManifestApp) -> str:
-        if app.folder:
-            return app.folder
-        # Default: /home/munaim/srv/apps/<key>
-        # mapped to HOST_APPS_ROOT/<key>
-        return os.path.join(HOST_APPS_ROOT, app.key)
+        # manifest.py now provides a default folder like /home/munaim/srv/apps/<key>
+        return app.folder or f"/home/munaim/srv/apps/{app.key}"
 
     def _get_running_containers_map(self) -> Dict[str, Any]:
         """
@@ -83,10 +90,12 @@ class BackupEngine:
         out = {}
         try:
             for cont in c.containers.list(all=True):
-                out[cont.name] = cont
-                # Also handle if name has a slash
-                name_clean = cont.name.lstrip("/")
-                if name_clean != cont.name:
+                # Standard name
+                name = cont.name
+                out[name] = cont
+                # Cleaned name
+                name_clean = name.lstrip("/")
+                if name_clean != name:
                     out[name_clean] = cont
         except Exception:
             pass
@@ -108,8 +117,9 @@ class BackupEngine:
         ports = []
         net = attrs.get("NetworkSettings") or {}
         p_map = net.get("Ports") or {}
-        for k, v in p_map.items():
-            ports.append(k)
+        if p_map:
+            for k in p_map.keys():
+                ports.append(k)
 
         return {
             "name": (attrs.get("Name") or "").lstrip("/") or cont.name,
@@ -127,12 +137,13 @@ class BackupEngine:
         if not docker_ping():
             issues.append("Docker not reachable (docker socket ping failed)")
 
-        ops_exists = os.path.isdir(HOST_OPS_ROOT)
+        local_ops = self._to_local_path(HOST_OPS_ROOT)
+        ops_exists = os.path.isdir(local_ops)
         if not ops_exists:
             issues.append(f"Missing ops directory: {HOST_OPS_ROOT}")
 
         try:
-            probe_path = HOST_OPS_ROOT if ops_exists else HOST_ROOT
+            probe_path = local_ops if ops_exists else HOST_ROOT
             du = shutil.disk_usage(probe_path)
             free_mb = du.free / (1024 * 1024)
             required_mb = estimated_mb * 1.2
@@ -150,7 +161,6 @@ class BackupEngine:
         inventory = []
 
         # Summary counters
-        summary: Dict[str, Any] = {}
         total_apps = 0
         total_db_containers = 0
         total_media_paths = 0
@@ -163,86 +173,54 @@ class BackupEngine:
 
             # 1. Folder Resolution
             folder = self._resolve_app_folder(app)
-            folder_exists = os.path.isdir(folder)
+            local_folder = self._to_local_path(folder)
+            folder_exists = os.path.isdir(local_folder)
 
             app_est_mb = 0.0
             app_issues = []
 
             # 2. Running Containers
             running_list = []
-            # We look for containers that match the manifest.containers list
-            # OR have labels matching the project?
-            # The requirement says "Use docker inspect... Extract..."
-            # It implies we find the containers belonging to this app.
-            # Usually we use the list in manifest.
-
-            # To be safe and consistent with previous logic, we check the names in app.containers
-            # And also maybe check labels if we wanted, but manifest.containers is authoritative in this system.
-
             for c_name in app.containers:
                 if c_name in all_running:
                     cont = all_running[c_name]
-                    info = self._extract_container_info(cont)
-                    running_list.append(info)
+                    running_list.append(self._extract_container_info(cont))
 
             # 3. Required Containers
             required_list = []
-
-            # Identify what is required
-            req_names: Set[str] = set()
-            if app.required_containers:
-                req_names = set(app.required_containers)
-            else:
-                # Auto-detect from manifest.containers
-                for c_name in app.containers:
-                    if "db" in c_name.lower():
-                        req_names.add(c_name)
-                    # Check image name from running container if available?
-                    # The requirement says: "containers containing 'db' OR image containing 'postgres'"
-                    # If it's not running, we can't check image easily unless we assume a naming convention or look at compose file (hard).
-                    # We will check if it's in the running list and has postgres image.
-                    if c_name in all_running:
-                         cont = all_running[c_name]
-                         # Check if image contains postgres
-                         try:
-                             # We can use the info we extracted or raw obj
-                             # Let's check image name roughly
-                             img = ""
-                             if cont.attrs and cont.attrs.get("Config"):
-                                 img = cont.attrs["Config"].get("Image") or ""
-                             if "postgres" in img.lower():
-                                 req_names.add(c_name)
-                         except:
-                             pass
-
-            # Now build the required_containers list for output
-            for r_name in sorted(req_names):
+            # Use manifest.required_containers (which already has defaults from manifest.py)
+            for r_name in sorted(app.required_containers):
                 status = "unknown"
-                role = "unknown"
-                if "db" in r_name.lower() or "postgres" in r_name.lower():
+                role = "app"
+                if "db" in r_name.lower():
                     role = "db"
                 elif "worker" in r_name.lower():
                     role = "worker"
-                else:
-                    role = "app"
+                elif "proxy" in r_name.lower() or "caddy" in r_name.lower():
+                    role = "proxy"
 
                 is_missing = True
                 exit_code = None
+                image = ""
 
                 if r_name in all_running:
                     is_missing = False
-                    # Extract status/exit code from running info
-                    # We can find it in running_list or look up in all_running
                     cont = all_running[r_name]
-                    status = cont.status
-                    if cont.attrs and cont.attrs.get("State"):
-                        exit_code = cont.attrs["State"].get("ExitCode")
+                    info = self._extract_container_info(cont)
+                    status = info["status"]
+                    exit_code = info["exit_code"]
+                    image = info["image"]
+                    
+                    # Double check role if it's db
+                    if "postgres" in image.lower() and role != "db":
+                        role = "db"
 
                 required_list.append({
                     "name": r_name,
                     "status": status,
                     "role": role,
                     "missing": is_missing,
+                    "image": image,
                     "exit_code": exit_code
                 })
 
@@ -257,15 +235,15 @@ class BackupEngine:
             ]
 
             for m_path in potential_media:
-                exists = os.path.isdir(m_path)
+                local_m_path = self._to_local_path(m_path)
+                exists = os.path.isdir(local_m_path)
                 size_mb = None
                 warning = None
 
                 if exists:
-                    size_mb = _estimate_dir_mb(m_path)
+                    size_mb = _estimate_dir_mb(local_m_path)
                     if size_mb is None:
-                        # Timeout or error
-                        warning = "Size estimation timed out or failed"
+                        warning = "size estimation timed out"
                     else:
                         app_est_mb += size_mb
                         total_media_paths += 1
@@ -279,8 +257,6 @@ class BackupEngine:
 
             # 5. Config Detection
             configs_list = []
-
-            # Base patterns inside the folder
             patterns = [
                 "docker-compose*.yml",
                 "docker-compose*.yaml",
@@ -291,96 +267,50 @@ class BackupEngine:
 
             config_paths = set()
             for pat in patterns:
-                for p in glob.glob(os.path.join(folder, pat)):
-                    config_paths.add(p)
+                for p in glob.glob(os.path.join(local_folder, pat)):
+                    # Convert back to host path for display
+                    h_path = p.replace(HOST_ROOT, "").replace("//", "/")
+                    config_paths.add(h_path)
 
-            # Global configs - only attach to "dashboard" app to avoid duplication
             if app.key == "dashboard":
-                if os.path.exists(HOST_CADDYFILE):
-                    config_paths.add(HOST_CADDYFILE)
+                config_paths.add(HOST_CADDYFILE)
+                # manifest files
+                config_paths.add("/home/munaim/srv/apps/dashboard/manifest.yml")
+                config_paths.add("/home/munaim/srv/apps/dashboard/data/manifest.override.yml")
 
-                # manifest.yml location:
-                # Based on previous code: os.path.join(HOST_APPS_ROOT, "dashboard/manifest.yml")
-                # Wait, HOST_APPS_ROOT is /home/munaim/srv/apps
-                # dashboard app is likely in /home/munaim/srv/apps/dashboard
-                # so manifest.yml might be in there.
-                # The requirements said: "/home/munaim/srv/dashboard/manifest.yml"
-                # Let's use the exact path from requirements if it exists, or check relative.
-                # Requirement: /home/munaim/srv/dashboard/manifest.yml
-                # But wait, HOST_ROOT might affect this.
-                # HOST_ROOT defaults to /host.
-                # So it would be HOST_ROOT/home/munaim/srv/dashboard/manifest.yml
-
-                # Let's stick to what was working or what looks right.
-                # previous code had: os.path.join(HOST_APPS_ROOT, "dashboard/manifest.yml")
-                # AND os.path.join(HOST_APPS_ROOT, "dashboard/data/manifest.override.yml")
-                # I'll include those.
-
-                p1 = os.path.join(HOST_APPS_ROOT, "dashboard/manifest.yml")
-                p2 = os.path.join(HOST_APPS_ROOT, "dashboard/data/manifest.override.yml")
-                config_paths.add(p1)
-                config_paths.add(p2)
-
-            for p in sorted(config_paths):
-                exists = os.path.exists(p)
+            for h_p in sorted(config_paths):
+                l_p = self._to_local_path(h_p)
+                exists = os.path.exists(l_p)
                 size_kb = None
                 if exists:
                     try:
-                        size_b = os.path.getsize(p)
+                        size_b = os.path.getsize(l_p)
                         size_kb = round(size_b / 1024.0, 2)
-                        # Add to total size (convert to MB)
                         app_est_mb += (size_b / (1024.0 * 1024.0))
                     except:
                         pass
 
                 configs_list.append({
-                    "path": p,
+                    "path": h_p,
                     "exists": exists,
                     "size_kb": size_kb
                 })
 
-            total_est_mb += app_est_mb
-
             # 6. Status Computation
-            # READY → all required containers running + no missing folder
-            # WARNING → folder exists but media/config missing (Wait, "media/config missing" - if media is optional?)
-            # The rule: WARNING → folder exists but media/config missing
-            # MISSING → required container missing or folder missing
-
+            # READY|WARNING|MISSING
             status = "READY"
-
-            # Check MISSING conditions
             if not folder_exists:
                 status = "MISSING"
-                app_issues.append("App folder missing")
+                app_issues.append("Folder missing")
 
             for req in required_list:
                 if req["missing"]:
                     status = "MISSING"
                     app_issues.append(f"Required container missing: {req['name']}")
-
-            # Check WARNING conditions (only if not MISSING)
-            if status != "MISSING":
-                # "folder exists but media/config missing"
-                # If we have media paths defined but they don't exist?
-                # Or if we have NO configs?
-
-                # If no configs found?
-                if not any(c['exists'] for c in configs_list):
-                     # Is it a warning? Maybe.
-                     pass
-
-                # If media paths don't exist?
-                # Only warn if we expect them?
-                # The rule is slightly vague: "folder exists but media/config missing"
-                # I'll interpret: if any detected media/config path was checked and found missing, it's NOT necessarily a warning,
-                # because we check `media` and `uploads` speculatively.
-
-                # Maybe "WARNING" if folder exists but NO docker-compose found?
-                has_compose = any("compose" in c['path'] and c['exists'] for c in configs_list)
-                if not has_compose:
-                    status = "WARNING"
-                    app_issues.append("No docker-compose configuration found")
+                elif req["status"] != "running":
+                    if status != "MISSING":
+                        status = "WARNING"
+                    app_issues.append(f"Required container not running: {req['name']} ({req['status']})")
 
             # Final inventory item
             inventory.append({
@@ -397,14 +327,15 @@ class BackupEngine:
                 "status": status,
                 "issues": app_issues
             })
+            total_est_mb += app_est_mb
 
-        # Final Summary
-        summary["apps_count"] = total_apps
-        summary["db_containers_count"] = total_db_containers
-        summary["media_paths_count"] = total_media_paths
-        summary["estimated_total_mb"] = round(total_est_mb, 2)
-        summary["estimated_total_gb"] = round(total_est_mb / 1024.0, 3)
-
+        summary = {
+            "apps_count": total_apps,
+            "db_containers_count": total_db_containers,
+            "media_paths_count": total_media_paths,
+            "estimated_total_mb": round(total_est_mb, 2),
+            "estimated_total_gb": round(total_est_mb / 1024.0, 3)
+        }
         validation = self.validate_environment(summary["estimated_total_mb"])
         summary["ready"] = validation["ready"]
         summary["issues"] = validation["issues"]

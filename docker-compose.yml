@@ -8,6 +8,12 @@ services:
       - ./.env:/app/.env:ro
       - ./manifest.yml:/app/manifest.yml:ro
       - ./data:/data
+      # Mount apps directrory for inventory sync and ops scripts
+      - /home/munaim/srv/apps:/home/munaim/srv/apps
+      # Mount ops logs directory (RW)
+      - /home/munaim/srv/ops/logs:/home/munaim/srv/ops/logs
+      # Mount Caddyfile for domain scanning (RO)
+      - /home/munaim/srv/proxy/caddy/Caddyfile:/home/munaim/srv/proxy/caddy/Caddyfile:ro
       # Read-only host mounts for host-level summary metrics.
       - /:/host:ro
     expose:

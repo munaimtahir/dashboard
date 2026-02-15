@@ -7,6 +7,7 @@ import Overview from './pages/Overview.jsx'
 import AppDetail from './pages/AppDetail.jsx'
 import Discover from './pages/Discover.jsx'
 import Backups from './pages/Backups.jsx'
+import OpsJobs from './pages/OpsJobs.jsx'
 
 function RequireAuth({ children }) {
   const loc = useLocation()
@@ -36,6 +37,7 @@ export default function App() {
       <Route path="/app/:key" element={<RequireAuth><AppDetail /></RequireAuth>} />
       <Route path="/discover" element={<RequireAuth><Discover /></RequireAuth>} />
       <Route path="/backups" element={<RequireAuth><Backups /></RequireAuth>} />
+      <Route path="/ops-jobs" element={<RequireAuth><OpsJobs /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

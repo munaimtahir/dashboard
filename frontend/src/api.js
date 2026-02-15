@@ -44,7 +44,7 @@ async function requestText(path, opts = {}) {
     try {
       const parsed = text ? JSON.parse(text) : null
       detail = parsed?.detail || parsed?.raw || detail
-    } catch {}
+    } catch { }
     const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
     err.status = res.status
     throw err
@@ -72,5 +72,21 @@ export const api = {
   reloadManifest: () => request('/api/manifest/reload', { method: 'POST' }),
   backupsPlan: () => request('/api/backups/plan'),
   backupsValidate: () => request('/api/backups/validate'),
-  backupsSimulate: () => request('/api/backups/simulate', { method: 'POST' })
+  backupsSimulate: () => request('/api/backups/simulate', { method: 'POST' }),
+
+  // Inventory
+  inventoryPreview: () => request('/api/inventory/preview', { method: 'POST' }),
+  inventorySync: () => request('/api/inventory/sync', { method: 'POST' }),
+
+  // Ops
+  opsStatus: (key) => request(`/api/apps/${encodeURIComponent(key)}/ops/status`),
+  opsStart: (key) => request(`/api/apps/${encodeURIComponent(key)}/ops/start`, { method: 'POST' }),
+  opsStop: (key) => request(`/api/apps/${encodeURIComponent(key)}/ops/stop`, { method: 'POST' }),
+  opsRestart: (key) => request(`/api/apps/${encodeURIComponent(key)}/ops/restart`, { method: 'POST' }),
+  opsDeploy: (key, confirm) => request(`/api/apps/${encodeURIComponent(key)}/ops/deploy`, {
+    method: 'POST',
+    headers: { 'X-Confirm': confirm }
+  }),
+  opsLogs: (key, lines) => requestText(`/api/apps/${encodeURIComponent(key)}/ops/logs?lines=${lines}`),
+  auditLogs: (limit) => request(`/api/audit/logs?limit=${limit || 50}`),
 }

@@ -67,4 +67,24 @@ def log_action(
                 (client_ip or "")[:100],
             ),
         )
-        conn.commit()
+def list_recent_actions(limit: int = 50) -> list[dict]:
+    with _lock:
+        conn = _connect()
+        cursor = conn.execute(
+            "SELECT id, timestamp, app_key, action, result, exit_code, message, client_ip FROM actions ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "timestamp": r[1],
+                "app_key": r[2],
+                "action": r[3],
+                "result": r[4],
+                "exit_code": r[5],
+                "message": r[6],
+                "client_ip": r[7],
+            }
+            for r in rows
+        ]

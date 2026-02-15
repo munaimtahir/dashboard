@@ -105,13 +105,35 @@ def load_manifest() -> Dict[str, ManifestApp]:
         key = str(item.get("key") or "").strip()
         if not key:
             continue
+        
+        # Default folder: /home/munaim/srv/apps/<key>
+        folder = str(item.get("folder") or "").strip()
+        if not folder:
+            folder = f"/home/munaim/srv/apps/{key}"
+            
+        containers = [str(c) for c in (item.get("containers") or [])]
+        
+        # Default required_containers
+        required_containers = [str(c) for c in (item.get("required_containers") or [])]
+        if not required_containers and containers:
+            # Logic: any container name containing "db" or first container
+            # Image check usually happens in backup_engine, but we can do a name-based check here
+            # and let backup_engine supplement it if needed, or just do it all there.
+            # However, the requirement says "IF these fields are absent, compute".
+            
+            db_conts = [c for c in containers if "db" in c.lower()]
+            if db_conts:
+                required_containers = db_conts
+            else:
+                required_containers = [containers[0]]
+
         apps[key] = ManifestApp(
             key=key,
             name=str(item.get("name") or key),
             domain=(str(item.get("domain")).strip() if item.get("domain") else None),
-            folder=(str(item.get("folder")).strip() if item.get("folder") else None),
-            containers=[str(c) for c in (item.get("containers") or [])],
-            required_containers=[str(c) for c in (item.get("required_containers") or [])],
+            folder=folder,
+            containers=containers,
+            required_containers=required_containers,
             backend_health_url=(str(item.get("backend_health_url")).strip() if item.get("backend_health_url") else None),
             frontend_url=(str(item.get("frontend_url")).strip() if item.get("frontend_url") else None),
         )

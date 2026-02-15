@@ -2,27 +2,32 @@ import React from 'react'
 import Card from './Card.jsx'
 import Spinner from './Spinner.jsx'
 
-export default function LogsViewer({ lines, setLines, log, loading, error, autoRefresh, setAutoRefresh, onRefresh }) {
+export default function LogsViewer({ lines, setLines, log, loading, error, autoRefresh, setAutoRefresh, onRefresh, disableControls }) {
   return (
     <Card title="Logs">
       <div className="row" style={{ marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="small">Tail</div>
-          <select
-            className="input"
-            style={{ maxWidth: 180 }}
-            value={lines}
-            onChange={(e) => setLines(parseInt(e.target.value, 10))}
-          >
-            <option value={100}>100</option>
-            <option value={200}>200</option>
-            <option value={500}>500</option>
-          </select>
-          <label className="toggle">
-            <input type="checkbox" checked={!!autoRefresh} onChange={(e) => setAutoRefresh(!!e.target.checked)} />
-            <span>Auto refresh</span>
-          </label>
-        </div>
+        {!disableControls && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="small">Tail</div>
+            <select
+              className="input"
+              style={{ maxWidth: 180 }}
+              value={lines || 200}
+              onChange={(e) => setLines && setLines(parseInt(e.target.value, 10))}
+              disabled={!setLines}
+            >
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+              <option value={500}>500</option>
+            </select>
+            {setAutoRefresh && (
+              <label className="toggle">
+                <input type="checkbox" checked={!!autoRefresh} onChange={(e) => setAutoRefresh(!!e.target.checked)} />
+                <span>Auto refresh</span>
+              </label>
+            )}
+          </div>
+        )}
         <button className="btn" onClick={onRefresh} disabled={loading}>Refresh</button>
       </div>
       {loading ? <div className="small" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Spinner size={14} /> Loading logs...</div> : null}

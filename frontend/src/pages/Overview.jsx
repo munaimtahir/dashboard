@@ -1,12 +1,13 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import Card from '../components/Card.jsx'
 import AppGrid from '../components/AppGrid.jsx'
+import InventoryModal from '../components/InventoryModal.jsx'
 import { api } from '../api.js'
 
 function fmtBytes(n) {
   if (!n && n !== 0) return 'N/A'
-  const units = ['B','KB','MB','GB','TB']
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let i = 0
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
@@ -22,9 +23,10 @@ function fmtUptime(sec) {
 }
 
 export default function Overview() {
-  const [summary, setSummary] = React.useState(null)
-  const [apps, setApps] = React.useState([])
-  const [error, setError] = React.useState('')
+  const [summary, setSummary] = useState(null)
+  const [apps, setApps] = useState([])
+  const [error, setError] = useState('')
+  const [showSync, setShowSync] = useState(false)
 
   async function load() {
     setError('')
@@ -37,7 +39,7 @@ export default function Overview() {
     }
   }
 
-  React.useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [])
 
   return (
     <div className="container">
@@ -47,6 +49,7 @@ export default function Overview() {
           <div className="subtitle">Server and app health</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={() => setShowSync(true)}>Sync Apps</button>
           <Link to="/discover" className="btn">Discover</Link>
           <Link to="/backups" className="btn">Backups</Link>
           <button className="btn" onClick={load}>Refresh</button>
@@ -104,6 +107,12 @@ export default function Overview() {
       ) : null}
 
       <AppGrid apps={apps} />
+
+      <InventoryModal
+        open={showSync}
+        onClose={() => { setShowSync(false); load(); }}
+        onSuccess={() => { load(); }}
+      />
     </div>
   )
 }

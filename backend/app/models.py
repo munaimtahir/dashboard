@@ -128,3 +128,41 @@ class ActionResponse(BaseModel):
     exit_code: Optional[int] = None
     message: Optional[str] = None
     status: Optional[AppStatus] = None
+
+
+class InventorySyncSummary(BaseModel):
+    """Summary of inventory sync changes"""
+    added: List[str] = Field(default_factory=list)
+    removed: List[str] = Field(default_factory=list)
+    updated: List[str] = Field(default_factory=list)
+    skipped_folders: List[str] = Field(default_factory=list)
+
+
+class InventoryPreviewResponse(BaseModel):
+    """Response for inventory preview"""
+    summary: InventorySyncSummary
+    preview_manifest: Dict[str, Any]
+
+
+class InventorySyncResponse(BaseModel):
+    """Response for inventory sync"""
+    summary: InventorySyncSummary
+    manifest: Dict[str, Any]
+
+
+class OpsStatusResponse(BaseModel):
+    """Response for ops status check"""
+    configured: bool
+    reason: Optional[str] = None
+    available_actions: List[str] = Field(default_factory=list)
+    running_action: Optional[str] = None
+
+
+class OpsActionResponse(BaseModel):
+    """Response for ops action execution"""
+    success: bool
+    exit_code: int
+    log_file: str
+    tail: str
+    message: str
+    updated_app_status: Optional[AppStatus] = None

@@ -5,7 +5,7 @@ import os
 import re
 import time
 from urllib.parse import urlparse
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Header
@@ -14,6 +14,10 @@ from docker.errors import NotFound as DockerNotFound
 
 from . import audit
 from .auth import get_admin_password, make_token, require_auth
+from .docker_ops import (
+    action_on_containers,
+    discover_inventory,
+    get_container_info,
     list_container_names,
     tail_logs,
     docker_client as get_docker_client,
@@ -207,7 +211,7 @@ async def inspect_app_endpoint(
     return data
 
 
-@app.get("/api/apps/inspect/summary", response_model=List[AppInspectorSummary])
+@app.get("/api/apps/inspect/summary", response_model=list[AppInspectorSummary])
 async def inspect_summary_endpoint(_: dict = Depends(require_auth)):
     manifest = load_manifest()
     d_client = get_docker_client()

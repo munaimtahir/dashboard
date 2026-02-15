@@ -6,6 +6,7 @@ import Button from '../components/Button.jsx'
 import ConfirmModal from '../components/ConfirmModal.jsx'
 import LogsViewer from '../components/LogsViewer.jsx'
 import Spinner from '../components/Spinner.jsx'
+import InspectorTab from '../components/InspectorTab.jsx'
 import { api } from '../api.js'
 
 function DeployModal({ open, appKey, onClose, onConfirm, busy }) {
@@ -58,6 +59,7 @@ export default function AppDetail() {
   const [busy, setBusy] = useState(false)
   const [actionFeedback, setActionFeedback] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
+  const [tab, setTab] = useState('dashboard') // 'dashboard' or 'inspector'
 
   const [lines, setLines] = useState(200)
   const [log, setLog] = useState('')
@@ -171,118 +173,133 @@ export default function AppDetail() {
 
       {app ? (
         <>
-          <div className="grid" style={{ marginBottom: 12 }}>
-            <div style={{ gridColumn: 'span 6' }}>
-              <Card title="Status">
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <Badge label={`Overall: ${app.overall_status}`} status={app.overall_status} />
-                  <Badge label={`Backend: ${app.backend_check ? (app.backend_check.ok ? 'OK' : 'Fail') : 'N/A'}`} status={app.backend_check?.ok ? 'HEALTHY' : 'DOWN'} />
-                  <Badge label={`Frontend: ${app.frontend_check ? (app.frontend_check.ok ? 'OK' : 'Fail') : 'N/A'}`} status={app.frontend_check?.ok ? 'HEALTHY' : 'DOWN'} />
-                </div>
-                <div style={{ height: 10 }} />
-                <div><b>Reason:</b> {app.reason}</div>
-                <div className="small"><b>Recommendation:</b> {app.recommendation}</div>
-              </Card>
+          <div className="tabs">
+            <div className={`tab ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
+              Dashboard
             </div>
-            <div style={{ gridColumn: 'span 6' }}>
-              <Card title="Ops Actions">
-                <div className="small" style={{ marginBottom: 10 }}>
-                  {isConfigured
-                    ? 'Safe ops scripts allowlisted.'
-                    : 'Ops scripts not configured for this app.'}
-                </div>
+            <div className={`tab ${tab === 'inspector' ? 'active' : ''}`} onClick={() => setTab('inspector')}>
+              Inspector
+            </div>
+          </div>
 
-                {actionFeedback ? (
-                  <div style={{ marginBottom: 10, padding: 8, background: actionFeedback.ok ? '#f0fff4' : '#fff5f5', borderRadius: 4 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Badge
-                        label={`${actionFeedback.ok ? 'Success' : 'Failure'}: ${actionFeedback.action}`}
-                        status={actionFeedback.ok ? 'HEALTHY' : 'DOWN'}
-                      />
-                      {actionFeedback.exitCode !== null && <span className="small">Exit: {actionFeedback.exitCode}</span>}
+          {tab === 'dashboard' ? (
+            <>
+              <div className="grid" style={{ marginBottom: 12 }}>
+                <div style={{ gridColumn: 'span 6' }}>
+                  <Card title="Status">
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <Badge label={`Overall: ${app.overall_status}`} status={app.overall_status} />
+                      <Badge label={`Backend: ${app.backend_check ? (app.backend_check.ok ? 'OK' : 'Fail') : 'N/A'}`} status={app.backend_check?.ok ? 'HEALTHY' : 'DOWN'} />
+                      <Badge label={`Frontend: ${app.frontend_check ? (app.frontend_check.ok ? 'OK' : 'Fail') : 'N/A'}`} status={app.frontend_check?.ok ? 'HEALTHY' : 'DOWN'} />
                     </div>
-                    {actionFeedback.message && <div className="small" style={{ marginTop: 6, fontWeight: 'bold' }}>{actionFeedback.message}</div>}
-                    {actionFeedback.tail && (
-                      <div className="code-block" style={{ marginTop: 6, fontSize: 11, maxHeight: 100, overflow: 'auto' }}>
-                        {actionFeedback.tail}
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button
-                    variant="primary"
-                    disabled={!isConfigured || busy || !available.has('start')}
-                    onClick={() => setPendingAction('start')}
-                  >
-                    {busy && pendingAction === 'start' ? <Spinner size={14} /> : 'Start'}
-                  </Button>
-                  <Button
-                    variant="danger"
-                    disabled={!isConfigured || busy || !available.has('stop')}
-                    onClick={() => setPendingAction('stop')}
-                  >
-                    {busy && pendingAction === 'stop' ? <Spinner size={14} /> : 'Stop'}
-                  </Button>
-                  <Button
-                    disabled={!isConfigured || busy || !available.has('restart')}
-                    onClick={() => setPendingAction('restart')}
-                  >
-                    {busy && pendingAction === 'restart' ? <Spinner size={14} /> : 'Restart'}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    disabled={!isConfigured || busy || !available.has('deploy')}
-                    style={{ marginLeft: 'auto', background: isConfigured && available.has('deploy') ? '#8e44ad' : undefined }}
-                    onClick={() => setPendingAction('deploy')}
-                  >
-                    {busy && pendingAction === 'deploy' ? <Spinner size={14} /> : 'Deploy'}
-                  </Button>
+                    <div style={{ height: 10 }} />
+                    <div><b>Reason:</b> {app.reason}</div>
+                    <div className="small"><b>Recommendation:</b> {app.recommendation}</div>
+                  </Card>
                 </div>
-              </Card>
-            </div>
-          </div>
+                <div style={{ gridColumn: 'span 6' }}>
+                  <Card title="Ops Actions">
+                    <div className="small" style={{ marginBottom: 10 }}>
+                      {isConfigured
+                        ? 'Safe ops scripts allowlisted.'
+                        : 'Ops scripts not configured for this app.'}
+                    </div>
 
-          <div className="grid" style={{ marginBottom: 12 }}>
-            <div style={{ gridColumn: 'span 12' }}>
-              <Card title="Containers">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Exists</th>
-                      <th>Status</th>
-                      <th>Running</th>
-                      <th>Exit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {app.container_info.map((c) => (
-                      <tr key={c.name}>
-                        <td>{c.name}</td>
-                        <td>{c.exists ? 'yes' : 'no'}</td>
-                        <td>{c.status}</td>
-                        <td>{c.running ? 'yes' : 'no'}</td>
-                        <td>{(c.exit_code === null || c.exit_code === undefined) ? '-' : c.exit_code}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </Card>
-            </div>
-          </div>
+                    {actionFeedback ? (
+                      <div style={{ marginBottom: 10, padding: 8, background: actionFeedback.ok ? '#f0fff4' : '#fff5f5', borderRadius: 4 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Badge
+                            label={`${actionFeedback.ok ? 'Success' : 'Failure'}: ${actionFeedback.action}`}
+                            status={actionFeedback.ok ? 'HEALTHY' : 'DOWN'}
+                          />
+                          {actionFeedback.exitCode !== null && <span className="small">Exit: {actionFeedback.exitCode}</span>}
+                        </div>
+                        {actionFeedback.message && <div className="small" style={{ marginTop: 6, fontWeight: 'bold' }}>{actionFeedback.message}</div>}
+                        {actionFeedback.tail && (
+                          <div className="code-block" style={{ marginTop: 6, fontSize: 11, maxHeight: 100, overflow: 'auto' }}>
+                            {actionFeedback.tail}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
 
-          <LogsViewer
-            lines={lines}
-            setLines={setLines}
-            log={log}
-            loading={logLoading}
-            error={logError}
-            autoRefresh={autoRefresh}
-            setAutoRefresh={setAutoRefresh}
-            onRefresh={loadLogs}
-          />
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Button
+                        variant="primary"
+                        disabled={!isConfigured || busy || !available.has('start')}
+                        onClick={() => setPendingAction('start')}
+                      >
+                        {busy && pendingAction === 'start' ? <Spinner size={14} /> : 'Start'}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        disabled={!isConfigured || busy || !available.has('stop')}
+                        onClick={() => setPendingAction('stop')}
+                      >
+                        {busy && pendingAction === 'stop' ? <Spinner size={14} /> : 'Stop'}
+                      </Button>
+                      <Button
+                        disabled={!isConfigured || busy || !available.has('restart')}
+                        onClick={() => setPendingAction('restart')}
+                      >
+                        {busy && pendingAction === 'restart' ? <Spinner size={14} /> : 'Restart'}
+                      </Button>
+                      <Button
+                        variant="primary"
+                        disabled={!isConfigured || busy || !available.has('deploy')}
+                        style={{ marginLeft: 'auto', background: isConfigured && available.has('deploy') ? '#8e44ad' : undefined }}
+                        onClick={() => setPendingAction('deploy')}
+                      >
+                        {busy && pendingAction === 'deploy' ? <Spinner size={14} /> : 'Deploy'}
+                      </Button>
+                    </div>
+                  </Card>
+                </div>
+              </div>
+
+              <div className="grid" style={{ marginBottom: 12 }}>
+                <div style={{ gridColumn: 'span 12' }}>
+                  <Card title="Containers">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Exists</th>
+                          <th>Status</th>
+                          <th>Running</th>
+                          <th>Exit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {app.container_info.map((c) => (
+                          <tr key={c.name}>
+                            <td>{c.name}</td>
+                            <td>{c.exists ? 'yes' : 'no'}</td>
+                            <td>{c.status}</td>
+                            <td>{c.running ? 'yes' : 'no'}</td>
+                            <td>{(c.exit_code === null || c.exit_code === undefined) ? '-' : c.exit_code}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </Card>
+                </div>
+              </div>
+
+              <LogsViewer
+                lines={lines}
+                setLines={setLines}
+                log={log}
+                loading={logLoading}
+                error={logError}
+                autoRefresh={autoRefresh}
+                setAutoRefresh={setAutoRefresh}
+                onRefresh={loadLogs}
+              />
+            </>
+          ) : (
+            <InspectorTab appKey={key} />
+          )}
         </>
       ) : null}
 

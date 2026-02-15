@@ -21,7 +21,9 @@ class ManifestApp:
     key: str
     name: str
     domain: Optional[str]
+    folder: Optional[str]
     containers: List[str]
+    required_containers: List[str]
     backend_health_url: Optional[str]
     frontend_url: Optional[str]
 
@@ -45,7 +47,9 @@ def _normalize_apps(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "key": key,
             "name": str(item.get("name") or key),
             "domain": (str(item.get("domain")).strip() if item.get("domain") else None),
+            "folder": (str(item.get("folder")).strip() if item.get("folder") else None),
             "containers": [str(c) for c in (item.get("containers") or [])],
+            "required_containers": [str(c) for c in (item.get("required_containers") or [])],
             "backend_health_url": (
                 str(item.get("backend_health_url")).strip() if item.get("backend_health_url") else None
             ),
@@ -105,7 +109,9 @@ def load_manifest() -> Dict[str, ManifestApp]:
             key=key,
             name=str(item.get("name") or key),
             domain=(str(item.get("domain")).strip() if item.get("domain") else None),
+            folder=(str(item.get("folder")).strip() if item.get("folder") else None),
             containers=[str(c) for c in (item.get("containers") or [])],
+            required_containers=[str(c) for c in (item.get("required_containers") or [])],
             backend_health_url=(str(item.get("backend_health_url")).strip() if item.get("backend_health_url") else None),
             frontend_url=(str(item.get("frontend_url")).strip() if item.get("frontend_url") else None),
         )
@@ -124,7 +130,9 @@ def upsert_override_app(app: Dict[str, Any]) -> Dict[str, Any]:
             "key": key,
             "name": str(app.get("name") or key),
             "domain": (str(app.get("domain")).strip() if app.get("domain") else None),
+            "folder": (str(app.get("folder")).strip() if app.get("folder") else None),
             "containers": [str(c) for c in (app.get("containers") or [])],
+            "required_containers": [str(c) for c in (app.get("required_containers") or [])],
             "backend_health_url": (str(app.get("backend_health_url")).strip() if app.get("backend_health_url") else None),
             "frontend_url": (str(app.get("frontend_url")).strip() if app.get("frontend_url") else None),
         }
